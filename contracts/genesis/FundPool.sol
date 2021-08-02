@@ -18,7 +18,6 @@ import '@openzeppelin/contracts/token/ERC20/SafeERC20.sol';
 
 import {Operator} from '../access/Operator.sol';
 
-
 contract FundPool is Operator {
     using SafeMath for uint256;
     using SafeERC20 for IERC20;
@@ -31,7 +30,6 @@ contract FundPool is Operator {
     uint256 public rewardRate = 0;
     uint256 public lastUpdateTime;
     uint256 public rewardPerTokenStored;
-    bool public emergency = false;
 
     uint256 public userRewardPerTokenPaid;
     uint256 public rewards;
@@ -44,12 +42,13 @@ contract FundPool is Operator {
     constructor(
         address rewardToken_,
         uint256 starttime_,
-        uint256 duration_
-    ) public{
+        uint256 duration_,
+        uint256 reward_
+    ) public {
         rewardToken = IERC20(rewardToken_);
         starttime = starttime_;
         DURATION = duration_;
-
+        notifyRewardAmount(reward_);
     }
 
     modifier checkStart() {
@@ -67,11 +66,6 @@ contract FundPool is Operator {
         _;
     }
 
-    modifier isEmergency() {
-        require(emergency == true, 'emergency is false');
-        _;
-    }
-
     function lastTimeRewardApplicable() public view returns (uint256) {
         return Math.min(block.timestamp, periodFinish);
     }
@@ -79,9 +73,7 @@ contract FundPool is Operator {
     function rewardPerToken() public view returns (uint256) {
         return
             rewardPerTokenStored.add(
-                lastTimeRewardApplicable()
-                    .sub(lastUpdateTime)
-                    .mul(rewardRate)
+                lastTimeRewardApplicable().sub(lastUpdateTime).mul(rewardRate)
             );
     }
 
@@ -93,7 +85,12 @@ contract FundPool is Operator {
                 .add(rewards);
     }
 
-    function claimReward() public onlyOperator updateReward(msg.sender) checkStart {
+    function claimReward()
+        public
+        onlyOperator
+        updateReward(msg.sender)
+        checkStart
+    {
         uint256 reward = earned();
         if (reward > 0) {
             rewards = 0;
@@ -103,8 +100,7 @@ contract FundPool is Operator {
     }
 
     function notifyRewardAmount(uint256 reward)
-        external
-        onlyOwner
+        internal
         updateReward(address(0))
     {
         if (block.timestamp > starttime) {
@@ -124,16 +120,5 @@ contract FundPool is Operator {
             periodFinish = starttime.add(DURATION);
             emit RewardAdded(reward);
         }
-    }
-
-    function setEmergency(bool _emergency) public onlyOwner {
-        emergency = _emergency;
-    }
-
-    function emergencyWithdrawReward() public onlyOwner isEmergency {
-        rewardToken.safeTransfer(
-            msg.sender,
-            rewardToken.balanceOf(address(this))
-        );
     }
 }
