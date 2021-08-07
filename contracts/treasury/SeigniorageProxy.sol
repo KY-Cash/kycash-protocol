@@ -9,6 +9,10 @@ import {Context} from '@openzeppelin/contracts/utils/Context.sol';
 
 import {TreasuryState} from './TreasuryState.sol';
 
+interface IBoardroomV2 {
+    function collectReward() external;
+}
+
 abstract contract SeigniorageProxyGov is Context, Ownable {
     address public treasury;
     address public boardroom;
@@ -65,6 +69,7 @@ contract SeigniorageProxy is SeigniorageProxyGov {
             address(this),
             _total
         );
+        IBoardroomV2(boardroom).collectReward();
     }
 
     function collect() public onlyBoardroom returns (address, uint256) {

@@ -6,9 +6,7 @@ import {Math} from '@openzeppelin/contracts/math/Math.sol';
 import {SafeMath} from '@openzeppelin/contracts/math/SafeMath.sol';
 import {IERC20} from '@openzeppelin/contracts/token/ERC20/IERC20.sol';
 import {SafeERC20} from '@openzeppelin/contracts/token/ERC20/SafeERC20.sol';
-import {
-    ReentrancyGuard
-} from '@openzeppelin/contracts/utils/ReentrancyGuard.sol';
+import {ReentrancyGuard} from '@openzeppelin/contracts/utils/ReentrancyGuard.sol';
 
 import {ICurve} from '../curve/Curve.sol';
 import {IOracle} from '../oracle/Oracle.sol';
@@ -41,9 +39,11 @@ contract Treasury is TreasuryState, ContractGuard {
         address _sOracle,
         address _seigniorageProxy,
         address _fund,
+        address _capital,
         address _curve,
-        uint256 _startTime
-    ) Epoch(1 days, _startTime, 0) {
+        uint256 _startTime,
+        uint256 _period
+    ) Epoch(_period, _startTime, 0) {
         cash = _cash;
         bond = _bond;
         share = _share;
@@ -54,19 +54,20 @@ contract Treasury is TreasuryState, ContractGuard {
         seigniorageProxy = _seigniorageProxy;
 
         fund = _fund;
+        capital = _capital;
 
         cashPriceOne = 10**18;
     }
 
     /* =================== Modifier =================== */
 
-    modifier checkMigration {
+    modifier checkMigration() {
         require(!migrated, 'Treasury: migrated');
 
         _;
     }
 
-    modifier updatePrice {
+    modifier updatePrice() {
         _;
 
         _updateCashPrice();
@@ -106,19 +107,6 @@ contract Treasury is TreasuryState, ContractGuard {
 
     /* ========== MUTABLE FUNCTIONS ========== */
 
-    function _updateConversionLimit(uint256 cashPrice) internal {
-        uint256 currentEpoch = Epoch(bOracle).getLastEpoch(); // lastest update time
-        if (lastBondOracleEpoch != currentEpoch) {
-            uint256 percentage = cashPriceOne.sub(cashPrice);
-            uint256 bondSupply = IERC20(bond).totalSupply();
-
-            bondCap = circulatingSupply().mul(percentage).div(1e18);
-            bondCap = bondCap.sub(Math.min(bondCap, bondSupply));
-
-            lastBondOracleEpoch = currentEpoch;
-        }
-    }
-
     function _updateCashPrice() internal {
         if (Epoch(bOracle).callable()) {
             try IOracle(bOracle).update() {} catch {}
@@ -126,63 +114,6 @@ contract Treasury is TreasuryState, ContractGuard {
         if (Epoch(sOracle).callable()) {
             try IOracle(sOracle).update() {} catch {}
         }
-    }
-
-    function buyBonds(uint256 amount, uint256 targetPrice)
-        external
-        onlyOneBlock
-        checkMigration
-        checkStartTime
-        checkOperator
-        updatePrice
-    {
-        require(amount > 0, 'Treasury: cannot purchase bonds with zero amount');
-
-        uint256 cashPrice = _getCashPrice(bOracle);
-        require(cashPrice <= targetPrice, 'Treasury: cash price moved');
-        require(
-            cashPrice < cashPriceOne, // price < $1
-            'Treasury: cashPrice not eligible for bond purchase'
-        );
-        _updateConversionLimit(cashPrice);
-
-        amount = Math.min(amount, bondCap.mul(cashPrice).div(1e18));
-        require(amount > 0, 'Treasury: amount exceeds bond cap');
-
-        IBasisAsset(cash).burnFrom(_msgSender(), amount);
-        IBasisAsset(bond).mint(_msgSender(), amount.mul(1e18).div(cashPrice));
-
-        emit BoughtBonds(_msgSender(), amount);
-    }
-
-    function redeemBonds(uint256 amount)
-        external
-        onlyOneBlock
-        checkMigration
-        checkStartTime
-        checkOperator
-        updatePrice
-    {
-        require(amount > 0, 'Treasury: cannot redeem bonds with zero amount');
-
-        uint256 cashPrice = _getCashPrice(bOracle);
-        require(
-            cashPrice > getCeilingPrice(), // price > $1.05
-            'Treasury: cashPrice not eligible for bond purchase'
-        );
-        require(
-            IERC20(cash).balanceOf(address(this)) >= amount,
-            'Treasury: treasury has no more budget'
-        );
-
-        accumulatedSeigniorage = accumulatedSeigniorage.sub(
-            Math.min(accumulatedSeigniorage, amount)
-        );
-
-        IBasisAsset(bond).burnFrom(_msgSender(), amount);
-        IERC20(cash).safeTransfer(_msgSender(), amount);
-
-        emit RedeemedBonds(_msgSender(), amount);
     }
 
     function allocateSeigniorage()
@@ -203,7 +134,6 @@ contract Treasury is TreasuryState, ContractGuard {
         uint256 percentage = cashPrice.sub(cashPriceOne);
         uint256 seigniorage = circulatingSupply().mul(percentage).div(1e18);
         IBasisAsset(cash).mint(address(this), seigniorage);
-
         // ======================== BIP-3
         uint256 fundReserve = seigniorage.mul(fundAllocationRate).div(100);
         if (fundReserve > 0) {
@@ -211,31 +141,27 @@ contract Treasury is TreasuryState, ContractGuard {
             ISimpleERCFund(fund).deposit(
                 cash,
                 fundReserve,
-                'Treasury: Seigniorage Allocation'
+                'Treasury: Seigniorage Allocation to Fund'
             );
             emit FundedToCommunityFund(block.timestamp, fundReserve);
         }
 
-        seigniorage = seigniorage.sub(fundReserve);
-
-        // ======================== BIP-4
-        uint256 treasuryReserve =
-            Math.min(
-                seigniorage,
-                IERC20(bond).totalSupply().sub(accumulatedSeigniorage)
+        uint256 capitalReserve = seigniorage.mul(capitalAllocationRate).div(
+            100
+        );
+        if (capitalReserve > 0) {
+            IERC20(cash).safeIncreaseAllowance(capital, capitalReserve);
+            ISimpleERCFund(capital).deposit(
+                cash,
+                capitalReserve,
+                'Treasury: Seigniorage Allocation to Capital'
             );
-        if (treasuryReserve > 0) {
-            if (treasuryReserve == seigniorage) {
-                treasuryReserve = treasuryReserve.mul(80).div(100);
-            }
-            accumulatedSeigniorage = accumulatedSeigniorage.add(
-                treasuryReserve
-            );
-            emit TreasuryFunded(block.timestamp, treasuryReserve);
+            emit FundedToCommunityFund(block.timestamp, capitalReserve);
         }
 
-        // seigniorage
-        seigniorage = seigniorage.sub(treasuryReserve);
+        seigniorage = seigniorage.sub(fundReserve);
+        seigniorage = seigniorage.sub(capitalReserve);
+
         if (seigniorage > 0) {
             IERC20(cash).safeIncreaseAllowance(seigniorageProxy, seigniorage);
             SeigniorageProxy(seigniorageProxy).allocateSeigniorage(seigniorage);

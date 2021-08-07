@@ -24,6 +24,7 @@ abstract contract TreasuryState is Epoch {
     address public share; // immutable
 
     address public fund;
+    address public capital;
     address public curve;
 
     address public bOracle;
@@ -36,13 +37,12 @@ abstract contract TreasuryState is Epoch {
     uint256 public lastBondOracleEpoch = 0;
     uint256 public bondCap = 0;
     uint256 public accumulatedSeigniorage = 0;
-    uint256 public fundAllocationRate = 40; // %
+    uint256 public fundAllocationRate = 20; // %
+    uint256 public capitalAllocationRate = 20; // %
 
     modifier checkOperator {
         require(
-            IBasisAsset(cash).operator() == address(this) &&
-                IBasisAsset(bond).operator() == address(this) &&
-                IBasisAsset(share).operator() == address(this),
+            IBasisAsset(cash).operator() == address(this), 
             'Treasury: need more permission'
         );
 
